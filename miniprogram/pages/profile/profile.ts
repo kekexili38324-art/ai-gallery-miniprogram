@@ -1,4 +1,4 @@
-// profile.ts
+﻿// profile.ts
 import { Toast } from 'tdesign-miniprogram';
 
 Page({
@@ -19,41 +19,34 @@ Page({
   },
 
   onLoad() {
-    // 检查是否已登录
     this.checkLoginStatus();
   },
 
   onShow() {
-    // 如果已登录，刷新用户作品
     if (this.data.isLoggedIn) {
       this.loadUserImages();
     }
   },
 
+  // 检查登录状态：调用 login 云函数获取 openid，再查 users 集合
   checkLoginStatus() {
-    // 检查云开发登录状态
     wx.cloud.callFunction({
       name: 'login',
       success: (res: any) => {
         if (res.result && res.result.openid) {
-          // 用户已登录，获取用户信息
           this.getUserInfo(res.result.openid);
         } else {
-          this.setData({
-            isLoggedIn: false,
-          });
+          this.setData({ isLoggedIn: false });
         }
       },
-      fail: (err) => {
+      fail: (err: any) => {
         console.error('检查登录状态失败', err);
-        this.setData({
-          isLoggedIn: false,
-        });
+        this.setData({ isLoggedIn: false });
       }
     });
   },
 
-  // 获取用户信息
+  // 从 users 集合读取用户资料
   getUserInfo(openid: string) {
     const db = wx.cloud.database();
     db.collection('users').where({
@@ -61,7 +54,7 @@ Page({
     }).get({
       success: (res) => {
         if (res.data.length > 0) {
-          const userInfo = res.data[0];
+          const userInfo = res.data[0] as any;
           this.setData({
             isLoggedIn: true,
             userInfo: {
@@ -72,76 +65,80 @@ Page({
           });
           this.loadUserImages();
         } else {
-          // 用户信息不存在，需要注册
-          this.setData({
-            isLoggedIn: false,
-          });
+          this.setData({ isLoggedIn: false });
         }
       },
-      fail: (err) => {
+      fail: (err: any) => {
         console.error('获取用户信息失败', err);
-        this.setData({
-          isLoggedIn: false,
-        });
+        const errMsg = (err as any).errMsg || '';
+        if (errMsg.includes('not exist') || errMsg.includes('DATABASE_COLLECTION_NOT_EXIST')) {
+          console.error('users 集合不存在，请在云开发控制台创建 users 集合');
+        }
+        this.setData({ isLoggedIn: false });
       }
     });
   },
 
+  // 微信一键登录
   onLoginTap() {
-    // 微信授权登录
     Toast({
       context: this,
       selector: '#t-toast',
       message: '登录中...',
       theme: 'loading',
       direction: 'column',
+      duration: 0,
     });
 
-    // 获取用户信息授权
-    wx.getUserProfile({
-      desc: '用于完善用户资料',
-      success: (res) => {
-        const userInfo = res.userInfo;
-        
-        // 调用云函数进行登录
-        wx.cloud.callFunction({
-          name: 'login',
-          success: (loginRes: any) => {
-            if (loginRes.result && loginRes.result.openid) {
-              const openid = loginRes.result.openid;
-              
-              // 将用户信息保存到云数据库
-              this.saveUserInfo(openid, userInfo);
-            } else {
-              Toast({
-                context: this,
-                selector: '#t-toast',
-                message: '登录失败，请重试',
-                theme: 'error',
-                direction: 'column',
-              });
-            }
+    // 步骤1：调用 login 云函数获取 openid
+    wx.cloud.callFunction({
+      name: 'login',
+      success: (loginRes: any) => {
+        if (!loginRes.result || !loginRes.result.openid) {
+          wx.hideToast();
+          Toast({
+            context: this,
+            selector: '#t-toast',
+            message: '获取用户身份失败',
+            theme: 'error',
+            direction: 'column',
+          });
+          return;
+        }
+
+        const openid = loginRes.result.openid;
+
+        // 步骤2：尝试获取微信用户信息（getUserProfile 已废弃，降级处理）
+        wx.getUserProfile({
+          desc: '用于完善用户资料',
+          success: (profileRes) => {
+            const userInfo = profileRes.userInfo;
+            this.saveUserInfo(openid, userInfo);
           },
-          fail: (err) => {
-            console.error('云函数调用失败', err);
-            Toast({
-              context: this,
-              selector: '#t-toast',
-              message: '登录失败，请重试',
-              theme: 'error',
-              direction: 'column',
-            });
+          fail: () => {
+            // getUserProfile 失败或被拒绝，使用默认头像和昵称静默登录
+            const defaultUserInfo = {
+              avatarUrl: '',
+              nickName: '微信用户'
+            };
+            this.saveUserInfo(openid, defaultUserInfo);
           }
         });
       },
-      fail: (err) => {
-        console.error('获取用户信息失败', err);
-        Toast({
-          context: this,
-          selector: '#t-toast',
-          message: '需要授权才能使用完整功能',
-          theme: 'warning',
-          direction: 'column',
+      fail: (err: any) => {
+        console.error('云函数调用失败', err);
+        wx.hideToast();
+        const errMsg = (err as any).errMsg || '';
+        let message = '登录失败，请重试';
+        if (errMsg.includes('FUNCTIONS_NOT_FOUND') || errMsg.includes('not found')) {
+          message = 'login 云函数未部署，请在开发者工具中右键 cloudfunctions/login 上传并部署';
+        } else if (errMsg.includes('TIME_LIMIT')) {
+          message = '云函数超时，请重新部署 login 云函数';
+        }
+        wx.showModal({
+          title: '登录失败',
+          content: message + '\n\n错误详情:\n' + errMsg,
+          showCancel: false,
         });
       }
     });
@@ -150,8 +147,7 @@ Page({
   // 保存用户信息到云数据库
   saveUserInfo(openid: string, userInfo: any) {
     const db = wx.cloud.database();
-    
-    // 先检查用户是否已存在
+
     db.collection('users').where({
       _openid: openid
     }).get({
@@ -167,15 +163,10 @@ Page({
             success: () => {
               this.loginSuccess(openid, userInfo);
             },
-            fail: (err) => {
+            fail: (err: any) => {
               console.error('更新用户信息失败', err);
-              Toast({
-                context: this,
-                selector: '#t-toast',
-                message: '登录失败，请重试',
-                theme: 'error',
-                direction: 'column',
-              });
+              wx.hideToast();
+              this.showLoginError('更新用户信息失败: ' + ((err as any).errMsg || ''));
             }
           });
         } else {
@@ -190,34 +181,46 @@ Page({
             success: () => {
               this.loginSuccess(openid, userInfo);
             },
-            fail: (err) => {
+            fail: (err: any) => {
               console.error('创建用户信息失败', err);
-              Toast({
-                context: this,
-                selector: '#t-toast',
-                message: '登录失败，请重试',
-                theme: 'error',
-                direction: 'column',
-              });
+              wx.hideToast();
+              const errMsg = (err as any).errMsg || '';
+              let message = '登录失败，请重试';
+              if (errMsg.includes('not exist') || errMsg.includes('DATABASE_COLLECTION_NOT_EXIST')) {
+                message = 'users 集合不存在，请在云开发控制台创建 users 集合';
+              } else {
+                message = '创建用户信息失败: ' + errMsg;
+              }
+              this.showLoginError(message);
             }
           });
         }
       },
-      fail: (err) => {
+      fail: (err: any) => {
         console.error('查询用户信息失败', err);
-        Toast({
-          context: this,
-          selector: '#t-toast',
-          message: '登录失败，请重试',
-          theme: 'error',
-          direction: 'column',
-        });
+        wx.hideToast();
+        const errMsg = (err as any).errMsg || '';
+        let message = '登录失败，请重试';
+        if (errMsg.includes('not exist') || errMsg.includes('DATABASE_COLLECTION_NOT_EXIST')) {
+          message = 'users 集合不存在，请在云开发控制台创建 users 集合';
+        } else {
+          message = '查询用户信息失败: ' + errMsg;
+        }
+        this.showLoginError(message);
       }
     });
   },
 
-  // 登录成功处理
+  showLoginError(message: string) {
+    wx.showModal({
+      title: '登录失败',
+      content: message,
+      showCancel: false,
+    });
+  },
+
   loginSuccess(openid: string, userInfo: any) {
+    wx.hideToast();
     this.setData({
       isLoggedIn: true,
       userInfo: {
@@ -226,7 +229,6 @@ Page({
         openid: openid
       }
     });
-    
     Toast({
       context: this,
       selector: '#t-toast',
@@ -234,49 +236,55 @@ Page({
       theme: 'success',
       direction: 'column',
     });
-    
     this.loadUserImages();
   },
 
   loadUserImages() {
-    if (!this.data.userInfo.openid) return;
-    
-    // 从云数据库加载用户作品
     const db = wx.cloud.database();
-    
     db.collection('images').where({
       _openid: this.data.userInfo.openid
-    })
-    .orderBy('createTime', 'desc')
-    .limit(20) // 限制返回数量，提升性能
-    .get({
-      success: (res) => {
-        const images = res.data.map((item: any) => ({
+    }).orderBy('createTime', 'desc').get({
+      success: async (res) => {
+        const rawImages = res.data.map((item: any) => ({
           id: item._id,
-          imageUrl: item.imageUrl,
+          imageUrl: item.imageUrl as string,
           prompt: item.prompt,
           createTime: item.createTime
         }));
-        
+
+        // 批量转换 cloud:// fileID
+        const fileIDList: string[] = [];
+        for (const img of rawImages) {
+          if (img.imageUrl && img.imageUrl.startsWith('cloud://')) {
+            fileIDList.push(img.imageUrl);
+          }
+        }
+        if (fileIDList.length > 0) {
+          try {
+            const tempRes = await wx.cloud.getTempFileURL({ fileList: fileIDList });
+            const urlMap: Record<string, string> = {};
+            for (const f of tempRes.fileList) {
+              if (f.tempFileURL) {
+                urlMap[f.fileID] = f.tempFileURL;
+              }
+            }
+            for (const img of rawImages) {
+              if (img.imageUrl in urlMap) {
+                img.imageUrl = urlMap[img.imageUrl];
+              }
+            }
+          } catch (e) {
+            console.warn('转换临时URL失败:', e);
+          }
+        }
+
         this.setData({
-          myImages: images,
-          creationCount: images.length,
+          myImages: rawImages,
+          creationCount: rawImages.length
         });
       },
       fail: (err) => {
         console.error('加载用户作品失败', err);
-        Toast({
-          context: this,
-          selector: '#t-toast',
-          message: '加载作品失败，请重试',
-          theme: 'error',
-          direction: 'column',
-        });
-        // 如果加载失败，显示空列表
-        this.setData({
-          myImages: [],
-          creationCount: 0,
-        });
       }
     });
   },
@@ -287,79 +295,42 @@ Page({
     });
   },
 
-  // 退出登录
   onLogoutTap() {
-    wx.showModal({
-      title: '确认退出',
-      content: '确定要退出登录吗？',
-      success: (res) => {
-        if (res.confirm) {
-          this.setData({
-            isLoggedIn: false,
-            userInfo: {
-              avatarUrl: '',
-              nickName: '',
-              openid: '',
-            },
-            myImages: [],
-            creationCount: 0,
-          });
-          
-          Toast({
-            context: this,
-            selector: '#t-toast',
-            message: '已退出登录',
-            theme: 'success',
-            direction: 'column',
-          });
-        }
-      }
+    this.setData({
+      isLoggedIn: false,
+      userInfo: {
+        avatarUrl: '',
+        nickName: '',
+        openid: '',
+      },
+      myImages: [],
+      creationCount: 0
+    });
+    Toast({
+      context: this,
+      selector: '#t-toast',
+      message: '已退出登录',
+      theme: 'success',
     });
   },
 
-  // 编辑头像
   onEditAvatarTap() {
     wx.chooseMedia({
       count: 1,
       mediaType: ['image'],
       sourceType: ['album', 'camera'],
-      maxDuration: 30,
-      camera: 'back',
       success: (res) => {
         const tempFilePath = res.tempFiles[0].tempFilePath;
         this.uploadAvatar(tempFilePath);
       },
-      fail: (err) => {
-        // 用户取消选择不显示错误提示
+      fail: (err: any) => {
         if (err.errMsg !== 'chooseMedia:fail cancel') {
           console.error('选择图片失败', err);
-          Toast({
-            context: this,
-            selector: '#t-toast',
-            message: '选择图片失败',
-            theme: 'error',
-          });
         }
       }
     });
   },
 
-  // 编辑昵称
-  onEditNicknameTap() {
-    wx.showModal({
-      title: '修改昵称',
-      editable: true,
-      placeholderText: '请输入新昵称',
-      success: (res) => {
-        if (res.confirm && res.content && res.content.trim()) {
-          const newNickname = res.content.trim();
-          this.updateUserNickname(newNickname);
-        }
-      }
-    });
-  },
-
-  // 上传头像到云存储
   uploadAvatar(tempFilePath: string) {
     Toast({
       context: this,
@@ -370,13 +341,12 @@ Page({
     });
 
     const openid = this.data.userInfo.openid;
-    const cloudPath = `avatars/${openid}.jpg`;
+    const cloudPath = 'avatars/' + openid + '.jpg';
 
     wx.cloud.uploadFile({
       cloudPath: cloudPath,
       filePath: tempFilePath,
       success: (uploadRes) => {
-        console.log('头像上传成功', uploadRes);
         this.updateUserAvatar(uploadRes.fileID);
       },
       fail: (err) => {
@@ -392,7 +362,6 @@ Page({
     });
   },
 
-  // 更新用户头像信息
   updateUserAvatar(fileID: string) {
     const db = wx.cloud.database();
     const openid = this.data.userInfo.openid;
@@ -402,19 +371,13 @@ Page({
     }).get({
       success: (res) => {
         if (res.data.length > 0) {
-          const userId = res.data[0]._id;
-          
-          db.collection('users').doc(userId).update({
+          db.collection('users').doc(res.data[0]._id).update({
             data: {
               avatarUrl: fileID,
               updateTime: new Date()
             },
             success: () => {
-              // 更新本地数据
-              this.setData({
-                'userInfo.avatarUrl': fileID
-              });
-              
+              this.setData({ 'userInfo.avatarUrl': fileID });
               wx.hideToast();
               Toast({
                 context: this,
@@ -449,7 +412,19 @@ Page({
     });
   },
 
-  // 更新用户昵称
+  onEditNicknameTap() {
+    wx.showModal({
+      title: '修改昵称',
+      editable: true,
+      placeholderText: '请输入新昵称',
+      success: (res) => {
+        if (res.confirm && res.content && res.content.trim()) {
+          this.updateUserNickname(res.content.trim());
+        }
+      }
+    });
+  },
+
   updateUserNickname(newNickname: string) {
     Toast({
       context: this,
@@ -467,19 +442,13 @@ Page({
     }).get({
       success: (res) => {
         if (res.data.length > 0) {
-          const userId = res.data[0]._id;
-          
-          db.collection('users').doc(userId).update({
+          db.collection('users').doc(res.data[0]._id).update({
             data: {
               nickName: newNickname,
               updateTime: new Date()
             },
             success: () => {
-              // 更新本地数据
-              this.setData({
-                'userInfo.nickName': newNickname
-              });
-              
+              this.setData({ 'userInfo.nickName': newNickname });
               wx.hideToast();
               Toast({
                 context: this,

@@ -1,4 +1,4 @@
-<view class="container" data-theme="{{theme}}">
+﻿<view class="container" data-theme="{{theme}}">
   <!-- 主题切换按钮 -->
   <view class="theme-toggle" bind:tap="onThemeToggle">
     <text class="theme-icon">{{theme === 'dark' ? '☀️' : '🌙'}}</text>
@@ -7,7 +7,7 @@
   <!-- 加载中状态 -->
   <view class="loading-container" wx:if="{{isLoading}}">
     <t-loading theme="circular" size="80rpx" text="{{taskStatus === 'PENDING' ? '任务排队中...' : taskStatus === 'RUNNING' ? '正在生成图片...' : '正在处理...'}}" inherit-color></t-loading>
-    <view class="status-text">任务状态：{{taskStatus || '查询中'}}</view>
+    <view class="status-text">任务状态：{{taskStatus || '查询中'}}，请耐心等待</view>
   </view>
   
   <!-- 错误状态 -->

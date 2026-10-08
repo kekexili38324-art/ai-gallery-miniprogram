@@ -1,4 +1,4 @@
-// create.ts
+﻿// create.ts
 import { Toast } from 'tdesign-miniprogram';
 
 Page({
@@ -11,7 +11,6 @@ Page({
   },
 
   onLoad() {
-    // 初始化主题
     const app = getApp();
     this.setData({ theme: app.globalData.theme });
   },
@@ -30,15 +29,12 @@ Page({
 
   onTagTap(e: any) {
     const tag = e.currentTarget.dataset.tag;
-    // 将标签添加到提示词中
     this.setData({
       prompt: this.data.prompt ? `${this.data.prompt}，${tag}` : tag
     });
   },
 
   showInspirationDialog() {
-    // 这里可以实现灵感提示功能
-    // 例如显示一些示例提示词及其生成的图片
     Toast({
       context: this,
       selector: '#t-toast',
@@ -69,21 +65,17 @@ Page({
     });
 
     try {
-      // 调用云函数创建文生图任务
       const result = await wx.cloud.callFunction({
         name: 'text2image',
         data: {
           action: 'createTask',
           prompt: this.data.prompt,
           negativePrompt: this.data.negativePrompt,
-          size: '1024*1024',
-          n: 1
         }
       });
 
       wx.hideToast();
 
-      // 类型安全检查
       const cloudResult = result.result as any;
       if (cloudResult && cloudResult.success) {
         const taskId = cloudResult.data?.taskId;
@@ -95,7 +87,6 @@ Page({
             theme: 'success',
           });
 
-          // 跳转到结果页面，传递任务ID
           setTimeout(() => {
             wx.navigateTo({
               url: `/pages/result/result?taskId=${taskId}&prompt=${encodeURIComponent(this.data.prompt)}&negativePrompt=${encodeURIComponent(this.data.negativePrompt)}`,
@@ -126,34 +117,21 @@ Page({
       console.error('调用云函数失败:', error);
       wx.hideToast();
       this.setData({ isGenerating: false });
-      
-      // 显示具体错误信息
-      let errorMessage = '网络错误，请重试';
-      try {
-        const cloudResult = (error as any)?.result;
-        if (cloudResult && cloudResult.error) {
-          errorMessage = cloudResult.error;
-        }
-      } catch (e) {
-        // 忽略解析错误
-      }
-      
+
       Toast({
         context: this,
         selector: '#t-toast',
-        message: errorMessage,
+        message: '网络错误，请重试',
         theme: 'error',
       });
     }
   },
 
-  // 主题切换
   onThemeToggle() {
     const app = getApp();
     app.toggleTheme();
   },
 
-  // 主题变化回调
   onThemeChange(theme: 'light' | 'dark') {
     this.setData({ theme });
   }

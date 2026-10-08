@@ -1,4 +1,4 @@
-// result.ts
+﻿// result.ts
 import { Toast } from 'tdesign-miniprogram';
 
 Page({
@@ -7,6 +7,7 @@ Page({
     negativePrompt: '',
     taskId: '',
     imageUrl: '',
+    fileID: '',
     isLoading: true,
     isRegenerating: false,
     isPublishing: false,
@@ -14,14 +15,14 @@ Page({
     taskStatus: '',
     errorMessage: '',
     pollTimer: null as any,
+    pollCount: 0,
     theme: 'light' as 'light' | 'dark',
   },
 
   onLoad(options: any) {
-    // 初始化主题
     const app = getApp();
     this.setData({ theme: app.globalData.theme });
-    
+
     if (options.prompt) {
       this.setData({
         prompt: decodeURIComponent(options.prompt),
@@ -30,9 +31,8 @@ Page({
       });
     }
 
-    // 开始查询任务结果
     if (this.data.taskId) {
-      this.startPollingTaskResult();
+      this.startPolling();
     } else {
       this.setData({
         isLoading: false,
@@ -42,26 +42,39 @@ Page({
   },
 
   onUnload() {
-    // 页面卸载时清除定时器
     if (this.data.pollTimer) {
       clearInterval(this.data.pollTimer);
     }
   },
 
-  // 开始轮询任务结果
-  startPollingTaskResult() {
+  startPolling() {
+    this.setData({ pollCount: 0 });
     this.queryTaskResult();
-    
-    // 设置定时器，每3秒查询一次
     const timer = setInterval(() => {
       this.queryTaskResult();
-    }, 3000);
-    
+    }, 5000);
     this.setData({ pollTimer: timer });
   },
 
-  // 查询任务结果
+  clearTimer() {
+    if (this.data.pollTimer) {
+      clearInterval(this.data.pollTimer);
+      this.setData({ pollTimer: null });
+    }
+  },
+
   async queryTaskResult() {
+    if (this.data.pollCount >= 60) {
+      this.clearTimer();
+      this.setData({
+        isLoading: false,
+        errorMessage: '生成超时（超过5分钟），请重试'
+      });
+      return;
+    }
+
+    this.setData({ pollCount: this.data.pollCount + 1 });
+
     try {
       const result = await wx.cloud.callFunction({
         name: 'text2image',
@@ -71,60 +84,67 @@ Page({
         }
       });
 
-      // 类型安全检查
       const cloudResult = result.result as any;
       if (cloudResult && cloudResult.success) {
         const taskData = cloudResult.data;
         const status = taskData?.status;
-        
+
         this.setData({ taskStatus: status || '' });
 
         if (status === 'SUCCEEDED') {
-          // 任务成功，获取图片URL
-          if (taskData?.imageUrls && taskData.imageUrls.length > 0) {
-            this.setData({
-              imageUrl: taskData.imageUrls[0] || '',
-              isLoading: false,
-              errorMessage: ''
-            });
-            
-            // 清除定时器
-            if (this.data.pollTimer) {
-              clearInterval(this.data.pollTimer);
-              this.setData({ pollTimer: null });
+          const fileIDs = taskData?.fileIDs;
+          if (fileIDs && fileIDs.length > 0) {
+            const fileID = fileIDs[0];
+            // cloud:// 开头的是云存储 fileID，需要转成临时 URL
+            if (fileID.startsWith('cloud://')) {
+              this.setData({ fileID: fileID });
+              const tempRes = await wx.cloud.getTempFileURL({
+                fileList: [fileID]
+              });
+              if (tempRes.fileList && tempRes.fileList[0] && tempRes.fileList[0].tempFileURL) {
+                this.setData({
+                  imageUrl: tempRes.fileList[0].tempFileURL,
+                  isLoading: false,
+                  errorMessage: ''
+                });
+              } else {
+                this.setData({
+                  isLoading: false,
+                  errorMessage: '获取图片链接失败'
+                });
+              }
+            } else {
+              // 转存失败的回退情况，直接使用原始 URL
+              this.setData({
+                imageUrl: fileID,
+                fileID: '',
+                isLoading: false,
+                errorMessage: ''
+              });
             }
+            this.clearTimer();
+          } else {
+            this.setData({
+              isLoading: false,
+              errorMessage: '未获取到图片'
+            });
+            this.clearTimer();
           }
         } else if (status === 'FAILED') {
-          // 任务失败
           this.setData({
             isLoading: false,
             errorMessage: '图片生成失败，请重试'
           });
-          
-          // 清除定时器
-          if (this.data.pollTimer) {
-            clearInterval(this.data.pollTimer);
-            this.setData({ pollTimer: null });
-          }
+          this.clearTimer();
         } else if (status === 'PENDING' || status === 'RUNNING') {
-          // 任务进行中，继续等待
           this.setData({
             isLoading: true,
             errorMessage: ''
           });
         }
-      } else {
-        const errorMsg = cloudResult?.error || '查询失败';
-        console.error('查询任务结果失败:', errorMsg);
-        this.setData({
-          errorMessage: errorMsg
-        });
       }
     } catch (error) {
       console.error('查询任务结果异常:', error);
-      this.setData({
-        errorMessage: '网络错误，请重试'
-      });
     }
   },
 
@@ -137,11 +157,10 @@ Page({
     }
   },
 
-  // 重新生成图片
   async onRegenerateTap() {
-    this.setData({
-      isRegenerating: true,
-    });
+    if (this.data.isRegenerating) return;
+
+    this.setData({ isRegenerating: true });
 
     Toast({
       context: this,
@@ -153,49 +172,32 @@ Page({
     });
 
     try {
-      // 调用云函数创建新的文生图任务
       const result = await wx.cloud.callFunction({
         name: 'text2image',
         data: {
           action: 'createTask',
           prompt: this.data.prompt,
           negativePrompt: this.data.negativePrompt,
-          size: '1024*1024',
-          n: 1
         }
       });
 
       wx.hideToast();
 
-      // 类型安全检查
       const cloudResult = result.result as any;
       if (cloudResult && cloudResult.success) {
-        const taskData = cloudResult.data;
-        
-        if (taskData?.taskId) {
-          // 清除旧的定时器
-          if (this.data.pollTimer) {
-            clearInterval(this.data.pollTimer);
-          }
-          
-          // 更新任务ID并重新开始查询
+        const taskId = cloudResult.data?.taskId;
+        if (taskId) {
+          this.clearTimer();
           this.setData({
-            taskId: taskData.taskId,
+            taskId: taskId,
             isLoading: true,
             isRegenerating: false,
             imageUrl: '',
-            errorMessage: ''
+            fileID: '',
+            errorMessage: '',
+            pollCount: 0,
           });
-          
-          Toast({
-            context: this,
-            selector: '#t-toast',
-            message: '新任务创建成功',
-            theme: 'success',
-          });
-          
-          // 开始查询新任务结果
-          this.startPollingTaskResult();
+          this.startPolling();
         } else {
           this.setData({ isRegenerating: false });
           Toast({
@@ -218,7 +220,6 @@ Page({
       console.error('重新生成失败:', error);
       wx.hideToast();
       this.setData({ isRegenerating: false });
-      
       Toast({
         context: this,
         selector: '#t-toast',
@@ -228,7 +229,6 @@ Page({
     }
   },
 
-  // 发布到画廊
   async onPublishTap() {
     if (!this.data.imageUrl) {
       Toast({
@@ -252,7 +252,6 @@ Page({
     });
 
     try {
-      // 获取用户openid
       const loginResult = await wx.cloud.callFunction({
         name: 'login'
       });
@@ -262,14 +261,13 @@ Page({
         throw new Error('获取用户信息失败');
       }
 
-      // 获取云数据库引用
       const db = wx.cloud.database();
       const imagesCollection = db.collection('images');
 
-      // 保存到画廊数据库
+      // 存储 fileID（如有）或临时 URL
       const publishData = {
         openid: openid,
-        imageUrl: this.data.imageUrl,
+        imageUrl: this.data.fileID || this.data.imageUrl,
         prompt: this.data.prompt,
         negativePrompt: this.data.negativePrompt || '',
         taskId: this.data.taskId,
@@ -295,7 +293,6 @@ Page({
           theme: 'success',
         });
 
-        // 延迟跳转到首页
         setTimeout(() => {
           wx.switchTab({
             url: '/pages/index/index'
@@ -308,7 +305,6 @@ Page({
       console.error('发布失败:', error);
       wx.hideToast();
       this.setData({ isPublishing: false });
-
       Toast({
         context: this,
         selector: '#t-toast',
@@ -318,7 +314,6 @@ Page({
     }
   },
 
-  // 保存图片到本机
   async onSaveImageTap() {
     if (!this.data.imageUrl) {
       Toast({
@@ -342,49 +337,43 @@ Page({
     });
 
     try {
-       // 下载图片到临时文件
-       const downloadResult = await new Promise<WechatMiniprogram.DownloadFileSuccessCallbackResult>((resolve, reject) => {
-         wx.downloadFile({
-           url: this.data.imageUrl,
-           success: resolve,
-           fail: reject
-         });
-       });
+      const downloadResult = await new Promise<WechatMiniprogram.DownloadFileSuccessCallbackResult>((resolve, reject) => {
+        wx.downloadFile({
+          url: this.data.imageUrl,
+          success: resolve,
+          fail: reject
+        });
+      });
 
-       if (downloadResult.statusCode === 200) {
-         // 保存图片到相册
-         await new Promise<WechatMiniprogram.GeneralCallbackResult>((resolve, reject) => {
-           wx.saveImageToPhotosAlbum({
-             filePath: downloadResult.tempFilePath,
-             success: resolve,
-             fail: reject
-           });
-         });
+      if (downloadResult.statusCode !== 200) {
+        throw new Error('下载图片失败，HTTP状态码: ' + downloadResult.statusCode);
+      }
 
-         wx.hideToast();
-         this.setData({ isSaving: false });
+      await new Promise<WechatMiniprogram.GeneralCallbackResult>((resolve, reject) => {
+        wx.saveImageToPhotosAlbum({
+          filePath: downloadResult.tempFilePath,
+          success: resolve,
+          fail: reject
+        });
+      });
 
-         Toast({
-           context: this,
-           selector: '#t-toast',
-           message: '图片已保存到相册',
-           theme: 'success',
-         });
-       } else {
-         throw new Error('下载图片失败');
-       }
+      wx.hideToast();
+      this.setData({ isSaving: false });
+
+      Toast({
+        context: this,
+        selector: '#t-toast',
+        message: '图片已保存到相册',
+        theme: 'success',
+      });
     } catch (error: any) {
       console.error('保存图片失败:', error);
       wx.hideToast();
       this.setData({ isSaving: false });
 
-      let errorMessage = '保存失败，请重试';
-      
-      // 处理权限相关错误
-      if (error.errMsg && error.errMsg.includes('auth')) {
-        errorMessage = '请授权访问相册后重试';
-        
-        // 引导用户去设置页面开启权限
+      const errMsg = error.errMsg || error.message || '';
+
+      if (errMsg.includes('auth') || errMsg.includes('saveImageToPhotosAlbum')) {
         wx.showModal({
           title: '需要相册权限',
           content: '保存图片需要访问您的相册，请在设置中开启权限',
@@ -399,27 +388,23 @@ Page({
         return;
       }
 
-      Toast({
-        context: this,
-        selector: '#t-toast',
-        message: errorMessage,
-        theme: 'error',
+      wx.showModal({
+        title: '保存失败',
+        content: errMsg || '未知错误',
+        showCancel: false,
       });
     }
   },
 
-  // 返回创作页面
   onBackToCreate() {
     wx.navigateBack();
   },
 
-  // 主题切换
   onThemeToggle() {
     const app = getApp();
     app.toggleTheme();
   },
 
-  // 主题变化回调
   onThemeChange(theme: 'light' | 'dark') {
     this.setData({ theme });
   },

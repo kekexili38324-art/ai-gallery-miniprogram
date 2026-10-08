@@ -22,7 +22,7 @@ App<ICustomAppOption>({
       console.error('请使用 2.2.3 或以上的基础库以使用云能力')
     } else {
       wx.cloud.init({
-        env: 'cloud1-6g4qsd2kcddd1be0', // 云开发环境ID
+        env: 'cloud1-d4gwpcu75d04fdd03', // 云开发环境ID
         traceUser: true,
       })
     }

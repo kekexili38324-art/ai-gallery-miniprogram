@@ -1,4 +1,4 @@
-// index.ts
+﻿// index.ts
 import { Toast } from 'tdesign-miniprogram';
 
 Page({
@@ -20,11 +20,9 @@ Page({
   },
 
   onLoad() {
-    // 初始化主题
     const app = getApp();
     this.setData({ theme: app.globalData.theme });
     this.updatePageTheme(app.globalData.theme);
-    
     this.loadImages();
   },
 
@@ -53,23 +51,19 @@ Page({
 
     this.setData({ isLoading: true });
 
-    // 从云数据库加载公开的图片
     const db = wx.cloud.database();
     const pageSize = 6;
     const skip = (this.data.page - 1) * pageSize;
 
-    // 添加超时处理
     const timeoutId = setTimeout(() => {
       console.error('加载图片超时');
       this.setData({ isLoading: false });
-      Toast({
-        context: this,
-        selector: '#t-toast',
-        message: '加载超时，请检查网络连接',
-        theme: 'error',
+      wx.showToast({
+        title: '加载超时，请检查网络连接',
+        icon: 'none',
       });
       callback?.();
-    }, 10000); // 10秒超时
+    }, 10000);
 
     db.collection('images')
       .where({
@@ -79,50 +73,74 @@ Page({
       .skip(skip)
       .limit(pageSize)
       .get({
-        success: (res) => {
+        success: async (res) => {
           clearTimeout(timeoutId);
-          console.log('数据库查询成功，返回数据:', res.data);
-          console.log('数据条数:', res.data.length);
-          
-          const images = res.data.map((item: any) => ({
-            id: item._id,
-            imageUrl: item.imageUrl,
-            prompt: item.prompt,
-            createTime: item.createTime
-          }));
+
+          // 收集需要转换的 fileID
+          const fileIDList: string[] = [];
+          const rawImages = res.data.map((item: any) => {
+            const imageUrl: string = item.imageUrl;
+            if (imageUrl && imageUrl.startsWith('cloud://')) {
+              fileIDList.push(imageUrl);
+            }
+            return {
+              id: item._id,
+              imageUrl: imageUrl,
+              prompt: item.prompt,
+              createTime: item.createTime
+            };
+          });
+
+          // 批量转换 cloud:// fileID 为临时 URL
+          if (fileIDList.length > 0) {
+            try {
+              const tempRes = await wx.cloud.getTempFileURL({ fileList: fileIDList });
+              const urlMap: Record<string, string> = {};
+              for (const f of tempRes.fileList) {
+                if (f.tempFileURL) {
+                  urlMap[f.fileID] = f.tempFileURL;
+                }
+              }
+              for (const img of rawImages) {
+                if (img.imageUrl in urlMap) {
+                  img.imageUrl = urlMap[img.imageUrl];
+                }
+              }
+            } catch (e) {
+              console.warn('转换临时URL失败:', e);
+            }
+          }
 
           this.setData({
-            imageList: [...this.data.imageList, ...images],
+            imageList: [...this.data.imageList, ...rawImages],
             page: this.data.page + 1,
             isLoading: false,
-            hasMore: images.length === pageSize, // 如果返回的数据少于pageSize，说明没有更多数据了
+            hasMore: rawImages.length === pageSize,
           });
-          
-          console.log('更新后的imageList:', this.data.imageList);
 
-          // 预加载图片以提升用户体验
-          this.preloadImages(images);
-
+          this.preloadImages(rawImages);
           callback?.();
         },
         fail: (error) => {
           clearTimeout(timeoutId);
           console.error('加载图片失败:', error);
-          this.setData({ isLoading: false });
-          
-          // 根据错误类型显示不同的提示信息
+          this.setData({ isLoading: false, hasMore: false });
+
+          const errObj = error as any;
           let errorMessage = '加载失败，请重试';
-          if ((error as any).errCode === -1) {
+
+          if (errObj.errCode === -1) {
             errorMessage = '网络连接失败，请检查网络';
-          } else if ((error as any).errCode === 10004) {
-            errorMessage = '云数据库访问失败';
+          } else if (errObj.errCode === 10004 || (errObj.errMsg && errObj.errMsg.includes('collection'))) {
+            errorMessage = '云数据库集合不存在，请在云开发控制台创建 images 集合';
+          } else if (errObj.errMsg) {
+            errorMessage = errObj.errMsg;
           }
-          
-          Toast({
-            context: this,
-            selector: '#t-toast',
-            message: errorMessage,
-            theme: 'error',
+
+          wx.showToast({
+            title: errorMessage,
+            icon: 'none',
+            duration: 3000,
           });
 
           callback?.();
@@ -130,21 +148,15 @@ Page({
       });
   },
 
-  // 预加载图片
   preloadImages(images: Array<{ imageUrl: string }>) {
     images.forEach((image, index) => {
-      // 延迟预加载，避免同时加载太多图片
       setTimeout(() => {
         wx.getImageInfo({
           src: image.imageUrl,
-          success: () => {
-            console.log('图片预加载成功:', image.imageUrl);
-          },
-          fail: (err) => {
-            console.warn('图片预加载失败:', image.imageUrl, err);
-          }
+          success: () => {},
+          fail: () => {}
         });
-      }, index * 100); // 每100ms预加载一张图片
+      }, index * 100);
     });
   },
 
@@ -155,16 +167,26 @@ Page({
   },
 
   onImageTap(e: any) {
-    const id = e.currentTarget.dataset.id;
-    console.log('点击了图片:', id);
-    // 可以跳转到图片详情页
+   const id = e.currentTarget.dataset.id;
+   console.log('点击了图片:', id);
+ },
+ 
+  // 点击图片预览大图
+  onImagePreview(e: any) {
+    const url = e.currentTarget.dataset.url;
+    if (!url) return;
+    // 收集当前所有图片 URL 作为预览列表
+    const urls = this.data.imageList.map((img: any) => img.imageUrl).filter((u: string) => !!u);
+    wx.previewImage({
+      urls: urls,
+      current: url,
+    });
   },
 
-  // 长按保存图片
   async onImageLongPress(e: any) {
     const imageUrl = e.currentTarget.dataset.url;
     const prompt = e.currentTarget.dataset.prompt;
-    
+
     if (!imageUrl) {
       Toast({
         context: this,
@@ -175,15 +197,12 @@ Page({
       return;
     }
 
-    // 显示操作选项
     wx.showActionSheet({
       itemList: ['保存到相册', '预览图片'],
       success: async (res) => {
         if (res.tapIndex === 0) {
-          // 保存到相册
           await this.saveImageToAlbum(imageUrl, prompt);
         } else if (res.tapIndex === 1) {
-          // 预览图片
           wx.previewImage({
             urls: [imageUrl],
             current: imageUrl,
@@ -193,7 +212,6 @@ Page({
     });
   },
 
-  // 保存图片到相册
   async saveImageToAlbum(imageUrl: string, _prompt: string) {
     Toast({
       context: this,
@@ -205,7 +223,6 @@ Page({
     });
 
     try {
-      // 下载图片到临时文件
       const downloadResult = await new Promise<WechatMiniprogram.DownloadFileSuccessCallbackResult>((resolve, reject) => {
         wx.downloadFile({
           url: imageUrl,
@@ -215,7 +232,6 @@ Page({
       });
 
       if (downloadResult.statusCode === 200) {
-        // 保存图片到相册
         await new Promise<WechatMiniprogram.GeneralCallbackResult>((resolve, reject) => {
           wx.saveImageToPhotosAlbum({
             filePath: downloadResult.tempFilePath,
@@ -225,7 +241,6 @@ Page({
         });
 
         wx.hideToast();
-
         Toast({
           context: this,
           selector: '#t-toast',
@@ -239,13 +254,9 @@ Page({
       console.error('保存图片失败:', error);
       wx.hideToast();
 
-      let errorMessage = '保存失败，请重试';
-      
-      // 处理权限相关错误
-      if (error.errMsg && error.errMsg.includes('auth')) {
-        errorMessage = '请授权访问相册后重试';
-        
-        // 引导用户去设置页面开启权限
+      const errMsg = error.errMsg || error.message || '';
+
+      if (errMsg.includes('auth') || errMsg.includes('saveImageToPhotosAlbum')) {
         wx.showModal({
           title: '需要相册权限',
           content: '保存图片需要访问您的相册，请在设置中开启权限',
@@ -260,31 +271,25 @@ Page({
         return;
       }
 
-      Toast({
-        context: this,
-        selector: '#t-toast',
-        message: errorMessage,
-        theme: 'error',
+      wx.showModal({
+        title: '保存失败',
+        content: errMsg || '未知错误',
+        showCancel: false,
       });
     }
   },
 
-  // 主题切换
   onThemeToggle() {
     const app = getApp();
     app.toggleTheme();
   },
 
-  // 主题变化回调
   onThemeChange(theme: 'light' | 'dark') {
     this.setData({ theme });
     this.updatePageTheme(theme);
   },
 
-  // 更新页面主题
   updatePageTheme(theme: 'light' | 'dark') {
-    // 主题已经通过 data-theme 属性和 CSS 变量自动应用
-    // 这里可以添加其他需要的主题相关逻辑
     console.log('页面主题已更新为:', theme);
   }
 });
